@@ -289,9 +289,43 @@ module.exports = async (req, res) => {
     const locationLine = place;
 
     // 1) Geo lookup -> lat/lon/timezone_id
-    const geo = await astrologyPost("geo_details", { place, maxRows: 1 });
-    const best = geo?.geonames?.[0];
-    if (!best) throw new Error("Geo lookup returned no results.");
+    // 1) Geo lookup -> lat/lon/timezone_id
+const normalizeCountry = (c) => {
+  const cc = safeTrim(c);
+  if (!cc) return "";
+  const map = {
+    USA: "United States",
+    "U.S.A.": "United States",
+    US: "United States",
+    "U.S.": "United States",
+    UK: "United Kingdom",
+    UAE: "United Arab Emirates",
+  };
+  return map[cc] || cc;
+};
+
+const countryNorm = normalizeCountry(birthCountry);
+
+// Try multiple place formats (API can be picky)
+const placeCandidates = [
+  [birthCity, birthRegion, countryNorm].filter(Boolean).join(", "),
+  [birthCity, countryNorm].filter(Boolean).join(", "),
+  // Extra fallbacks (sometimes commas hurt)
+  [birthCity, birthRegion, countryNorm].filter(Boolean).join(" "),
+  [birthCity, countryNorm].filter(Boolean).join(" "),
+  // Last resort
+  birthCity,
+];
+
+let best = null;
+
+for (const candidate of placeCandidates) {
+  const geo = await astrologyPost("geo_details", { place: candidate, maxRows: 5 });
+  best = geo?.geonames?.[0] || null;
+  if (best) break;
+}
+
+if (!best) throw new Error("Geo lookup returned no results.");("Geo lookup returned no results.");
 
     const lat = Number(best.latitude);
     const lon = Number(best.longitude);
