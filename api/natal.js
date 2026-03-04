@@ -134,11 +134,9 @@ function buildInterpretationHTML({ name, sun, moon, rising }) {
       Then let your <strong>${sun} Sun</strong> decide the direction. Your <strong>${rising} Rising</strong> is the social steering wheel—use it consciously.</p>
 
       <p><strong>Accelerate</strong>: Your growth hack is alignment:
-      <em>feel</em> it (${moon}), <em>choose</em> it (${sun}), then <em>show</em> it (${rising}).
-      If you’re stuck, adjust the order—sometimes presentation (${rising}) unlocks momentum, other times emotions (${moon}) do.</p>
+      <em>feel</em> it (${moon}), <em>choose</em> it (${sun}), then <em>show</em> it (${rising}).</p>
 
-      <p><strong>Celebrate</strong>: Your “Big 3” blend—<strong>${sun} / ${moon} / ${rising}</strong>—is a real signature.
-      It’s not about being perfect; it’s about being consistent with your nature and letting that consistency become your confidence.</p>
+      <p><strong>Celebrate</strong>: Your “Big 3” blend—<strong>${sun} / ${moon} / ${rising}</strong>—is a real signature.</p>
     </div>
   `.trim();
 }
@@ -191,6 +189,11 @@ function buildFullHTML({ name, email, birthDate, birthTime, locationLine, big3, 
 
 async function htmlToPdfBuffer(html) {
   const key = process.env.PDFSHIFT_API_KEY;
+
+  // SAFE DEBUG: prints only first 4 chars + length (does NOT reveal the key)
+  const keyPreview = key ? `${key.slice(0, 4)}… (len=${key.length})` : "MISSING";
+  console.error("PDFSHIFT_API_KEY:", keyPreview);
+
   if (!key) throw new Error("Missing PDFSHIFT_API_KEY.");
 
   const resp = await fetch("https://api.pdfshift.io/v3/convert/pdf", {
