@@ -4,6 +4,7 @@
 const sgMail = require("@sendgrid/mail");
 const chromium = require("@sparticuz/chromium");
 const puppeteer = require("puppeteer-core");
+const { DateTime } = require("luxon");
 
 function json(res, status, data) {
   res.statusCode = status;
@@ -51,6 +52,20 @@ async function astrologyPost(endpoint, data) {
   } catch {
     throw new Error(`AstrologyAPI ${endpoint} returned non-JSON.`);
   }
+}
+
+function normalizeCountry(c) {
+  const cc = safeTrim(c);
+  if (!cc) return "";
+  const map = {
+    USA: "United States",
+    "U.S.A.": "United States",
+    US: "United States",
+    "U.S.": "United States",
+    UK: "United Kingdom",
+    UAE: "United Arab Emirates",
+  };
+  return map[cc] || cc;
 }
 
 function signBlurbSun(sign) {
@@ -110,35 +125,23 @@ function signBlurbRising(sign) {
 function buildInterpretationHTML({ name, sun, moon, rising }) {
   const displayName = safeTrim(name) ? safeTrim(name) : "friend";
 
-  const discover = `
-    <p><strong>Discover</strong>: ${displayName}, your core is <strong>${sun} Sun</strong> — ${signBlurbSun(sun)}
-    Your inner world is <strong>${moon} Moon</strong> — ${signBlurbMoon(moon)}
-    And your first impression is <strong>${rising} Rising</strong> — ${signBlurbRising(rising)}</p>
-  `;
-
-  const navigate = `
-    <p><strong>Navigate</strong>: When life gets loud, let your <strong>${moon} Moon</strong> choose the emotional “home base.”
-    Then let your <strong>${sun} Sun</strong> decide the direction. Your <strong>${rising} Rising</strong> is the social steering wheel—use it consciously.</p>
-  `;
-
-  const accelerate = `
-    <p><strong>Accelerate</strong>: Your growth hack is alignment:
-    <em>feel</em> it (${moon}), <em>choose</em> it (${sun}), then <em>show</em> it (${rising}).
-    If you’re stuck, adjust the order—sometimes presentation (${rising}) unlocks momentum, other times emotions (${moon}) do.</p>
-  `;
-
-  const celebrate = `
-    <p><strong>Celebrate</strong>: Your “Big 3” blend—<strong>${sun} / ${moon} / ${rising}</strong>—is a real signature.
-    It’s not about being perfect; it’s about being consistent with your nature and letting that consistency become your confidence.</p>
-  `;
-
   return `
     <div>
       <h2 style="margin:0 0 10px 0;">Your Big 3 Snapshot</h2>
-      ${discover}
-      ${navigate}
-      ${accelerate}
-      ${celebrate}
+
+      <p><strong>Discover</strong>: ${displayName}, your core is <strong>${sun} Sun</strong> — ${signBlurbSun(sun)}
+      Your inner world is <strong>${moon} Moon</strong> — ${signBlurbMoon(moon)}
+      And your first impression is <strong>${rising} Rising</strong> — ${signBlurbRising(rising)}</p>
+
+      <p><strong>Navigate</strong>: When life gets loud, let your <strong>${moon} Moon</strong> choose the emotional “home base.”
+      Then let your <strong>${sun} Sun</strong> decide the direction. Your <strong>${rising} Rising</strong> is the social steering wheel—use it consciously.</p>
+
+      <p><strong>Accelerate</strong>: Your growth hack is alignment:
+      <em>feel</em> it (${moon}), <em>choose</em> it (${sun}), then <em>show</em> it (${rising}).
+      If you’re stuck, adjust the order—sometimes presentation (${rising}) unlocks momentum, other times emotions (${moon}) do.</p>
+
+      <p><strong>Celebrate</strong>: Your “Big 3” blend—<strong>${sun} / ${moon} / ${rising}</strong>—is a real signature.
+      It’s not about being perfect; it’s about being consistent with your nature and letting that consistency become your confidence.</p>
     </div>
   `.trim();
 }
@@ -238,49 +241,6 @@ async function sendEmailWithPdf({ to, from, subject, text, filename, pdfBuffer }
   await sgMail.send(msg);
 }
 
-function normalizeCountry(c) {
-  const cc = safeTrim(c);
-  if (!cc) return "";
-  const map = {
-    USA: "United States",
-    "U.S.A.": "United States",
-    US: "United States",
-    "U.S.": "United States",
-    UK: "United Kingdom",
-    UAE: "United Arab Emirates",
-  };
-  return map[cc] || cc;
-}
-
-function extractNumeric(v) {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string") {
-    const n = Number.parseFloat(v);
-    if (Number.isFinite(n)) return n;
-  }
-  return null;
-}
-
-function findFirstNumericInObject(obj) {
-  if (!obj || typeof obj !== "object") return null;
-  const queue = [obj];
-  const seen = new Set();
-
-  while (queue.length) {
-    const cur = queue.shift();
-    if (!cur || typeof cur !== "object") continue;
-    if (seen.has(cur)) continue;
-    seen.add(cur);
-
-    for (const val of Object.values(cur)) {
-      const n = extractNumeric(val);
-      if (n !== null) return n;
-      if (val && typeof val === "object") queue.push(val);
-    }
-  }
-  return null;
-}
-
 module.exports = async (req, res) => {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -288,8 +248,7 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const body =
-      typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
+    const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
 
     const name = safeTrim(body.name);
     const birthDate = safeTrim(body.birthDate);
@@ -300,8 +259,10 @@ module.exports = async (req, res) => {
     const email = safeTrim(body.email);
     const website = safeTrim(body.website);
 
+    // honeypot
     if (website) return json(res, 400, { error: "Spam detected." });
 
+    // validation
     if (!isValidDateYYYYMMDD(birthDate)) return json(res, 400, { error: "birthDate must be YYYY-MM-DD" });
     if (!isValidTimeHHMM(birthTime)) return json(res, 400, { error: "birthTime must be HH:MM" });
     if (!birthCity) return json(res, 400, { error: "birthCity is required" });
@@ -320,8 +281,8 @@ module.exports = async (req, res) => {
     const hour = Number(hourStr);
     const min = Number(minStr);
 
+    // GEO lookup with retries
     const countryNorm = normalizeCountry(birthCountry);
-
     const placeCandidates = [
       [birthCity, birthRegion, countryNorm].filter(Boolean).join(", "),
       [birthCity, countryNorm].filter(Boolean).join(", "),
@@ -331,7 +292,7 @@ module.exports = async (req, res) => {
     ];
 
     let best = null;
-    let usedPlace = [birthCity, birthRegion, countryNorm].filter(Boolean).join(", ");
+    let usedPlace = placeCandidates[0];
 
     for (const candidate of placeCandidates) {
       const geo = await astrologyPost("geo_details", { place: candidate, maxRows: 5 });
@@ -347,26 +308,26 @@ module.exports = async (req, res) => {
     const lat = Number(best.latitude);
     const lon = Number(best.longitude);
 
-    // Timezone offset for that date/location
-    const tz = await astrologyPost("timezone_with_dst", {
-      lat,
-      lon,
-      date: birthDate,
-    });
+    // timezone name from geo response, then compute offset using Luxon
+    const tzName =
+      safeTrim(best.timezone) ||
+      safeTrim(best.timezoneId) ||
+      safeTrim(best.timezone_id) ||
+      safeTrim(best.timezone_name) ||
+      "";
 
-    const tzone =
-      extractNumeric(tz?.tzone) ??
-      extractNumeric(tz?.timezone) ??
-      extractNumeric(tz?.tz) ??
-      extractNumeric(tz?.offset) ??
-      extractNumeric(tz?.gmtOffset) ??
-      extractNumeric(tz?.gmt_offset) ??
-      findFirstNumericInObject(tz);
-
-    if (typeof tzone !== "number") {
-      throw new Error("Timezone lookup did not return numeric tzone.");
+    if (!tzName) {
+      throw new Error("Geo lookup did not return a timezone name.");
     }
 
+    const dt = DateTime.fromISO(`${birthDate}T${birthTime}`, { zone: tzName });
+    if (!dt.isValid) {
+      throw new Error(`Invalid datetime for timezone computation: ${dt.invalidExplanation || "unknown"}`);
+    }
+
+    const tzone = dt.offset / 60; // minutes -> hours (can be fractional)
+
+    // planets -> Big 3
     const planets = await astrologyPost("planets/tropical", {
       day,
       month,
@@ -397,20 +358,19 @@ module.exports = async (req, res) => {
     const big3 = { sun, moon, rising };
     const interpretationHTML = buildInterpretationHTML({ name, sun, moon, rising });
 
-    const locationLine = usedPlace;
-
     const fullHTML = buildFullHTML({
       name,
       email,
       birthDate,
       birthTime,
-      locationLine,
+      locationLine: usedPlace,
       big3,
       interpretationHTML,
     });
 
     const pdfBuffer = await htmlToPdfBuffer(fullHTML);
 
+    // Send email (don’t fail the API response if SendGrid fails)
     let email_status = "sent";
     try {
       const subject = "Your Natal Snapshot (Big 3 PDF)";
