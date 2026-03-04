@@ -337,13 +337,48 @@ if (!best) throw new Error("Geo lookup returned no results.");("Geo lookup retur
       date: birthDate, // docs: timezone offset incl DST for date
     });
 
-    // Some accounts return { tzone: X } while others may return { timezone: X }.
-    const tzone =
-      typeof tz?.tzone === "number"
-        ? tz.tzone
-        : (typeof tz?.timezone === "number" ? tz.timezone : null);
+    // const extractNumeric = (v) => {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number.parseFloat(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+};
 
-    if (typeof tzone !== "number") {
+const findFirstNumericInObject = (obj) => {
+  if (!obj || typeof obj !== "object") return null;
+  const queue = [obj];
+  const seen = new Set();
+
+  while (queue.length) {
+    const cur = queue.shift();
+    if (!cur || typeof cur !== "object") continue;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+
+    for (const val of Object.values(cur)) {
+      const n = extractNumeric(val);
+      if (n !== null) return n;
+      if (val && typeof val === "object") queue.push(val);
+    }
+  }
+  return null;
+};
+
+// Try common keys first, then scan object
+let tzone =
+  extractNumeric(tz?.tzone) ??
+  extractNumeric(tz?.timezone) ??
+  extractNumeric(tz?.tz) ??
+  extractNumeric(tz?.offset) ??
+  extractNumeric(tz?.gmtOffset) ??
+  extractNumeric(tz?.gmt_offset) ??
+  findFirstNumericInObject(tz);
+
+if (typeof tzone !== "number") {
+  throw new Error("Timezone lookup did not return numeric tzone.");
+}") {
       throw new Error("Timezone lookup did not return numeric tzone.");
     }
 
