@@ -1,5 +1,5 @@
 // api/natal.js
-// Vercel Serverless Function (Node.js) - no storage, minimal logging.
+// Vercel Serverless Function (Node.js) - generate-and-discard, minimal logging.
 
 const sgMail = require("@sendgrid/mail");
 const chromium = require("@sparticuz/chromium");
@@ -43,7 +43,6 @@ async function astrologyPost(endpoint, data) {
 
   const text = await resp.text();
   if (!resp.ok) {
-    // Minimal logging: do not log request body / PII.
     throw new Error(`AstrologyAPI ${endpoint} failed: ${resp.status} ${text}`);
   }
 
@@ -239,6 +238,49 @@ async function sendEmailWithPdf({ to, from, subject, text, filename, pdfBuffer }
   await sgMail.send(msg);
 }
 
+function normalizeCountry(c) {
+  const cc = safeTrim(c);
+  if (!cc) return "";
+  const map = {
+    USA: "United States",
+    "U.S.A.": "United States",
+    US: "United States",
+    "U.S.": "United States",
+    UK: "United Kingdom",
+    UAE: "United Arab Emirates",
+  };
+  return map[cc] || cc;
+}
+
+function extractNumeric(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number.parseFloat(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function findFirstNumericInObject(obj) {
+  if (!obj || typeof obj !== "object") return null;
+  const queue = [obj];
+  const seen = new Set();
+
+  while (queue.length) {
+    const cur = queue.shift();
+    if (!cur || typeof cur !== "object") continue;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+
+    for (const val of Object.values(cur)) {
+      const n = extractNumeric(val);
+      if (n !== null) return n;
+      if (val && typeof val === "object") queue.push(val);
+    }
+  }
+  return null;
+}
+
 module.exports = async (req, res) => {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -246,11 +288,8 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // Parse JSON body (Vercel may give string or object depending on runtime).
     const body =
-      typeof req.body === "string"
-        ? JSON.parse(req.body || "{}")
-        : (req.body || {});
+      typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
 
     const name = safeTrim(body.name);
     const birthDate = safeTrim(body.birthDate);
@@ -261,12 +300,8 @@ module.exports = async (req, res) => {
     const email = safeTrim(body.email);
     const website = safeTrim(body.website);
 
-    // Honeypot
-    if (website) {
-      return json(res, 400, { error: "Spam detected." });
-    }
+    if (website) return json(res, 400, { error: "Spam detected." });
 
-    // Basic validation
     if (!isValidDateYYYYMMDD(birthDate)) return json(res, 400, { error: "birthDate must be YYYY-MM-DD" });
     if (!isValidTimeHHMM(birthTime)) return json(res, 400, { error: "birthTime must be HH:MM" });
     if (!birthCity) return json(res, 400, { error: "birthCity is required" });
@@ -285,104 +320,53 @@ module.exports = async (req, res) => {
     const hour = Number(hourStr);
     const min = Number(minStr);
 
-    const place = [birthCity, birthRegion, birthCountry].filter(Boolean).join(", ");
-    const locationLine = place;
+    const countryNorm = normalizeCountry(birthCountry);
 
-    // 1) Geo lookup -> lat/lon/timezone_id
-    // 1) Geo lookup -> lat/lon/timezone_id
-const normalizeCountry = (c) => {
-  const cc = safeTrim(c);
-  if (!cc) return "";
-  const map = {
-    USA: "United States",
-    "U.S.A.": "United States",
-    US: "United States",
-    "U.S.": "United States",
-    UK: "United Kingdom",
-    UAE: "United Arab Emirates",
-  };
-  return map[cc] || cc;
-};
+    const placeCandidates = [
+      [birthCity, birthRegion, countryNorm].filter(Boolean).join(", "),
+      [birthCity, countryNorm].filter(Boolean).join(", "),
+      [birthCity, birthRegion, countryNorm].filter(Boolean).join(" "),
+      [birthCity, countryNorm].filter(Boolean).join(" "),
+      birthCity,
+    ];
 
-const countryNorm = normalizeCountry(birthCountry);
+    let best = null;
+    let usedPlace = [birthCity, birthRegion, countryNorm].filter(Boolean).join(", ");
 
-// Try multiple place formats (API can be picky)
-const placeCandidates = [
-  [birthCity, birthRegion, countryNorm].filter(Boolean).join(", "),
-  [birthCity, countryNorm].filter(Boolean).join(", "),
-  // Extra fallbacks (sometimes commas hurt)
-  [birthCity, birthRegion, countryNorm].filter(Boolean).join(" "),
-  [birthCity, countryNorm].filter(Boolean).join(" "),
-  // Last resort
-  birthCity,
-];
+    for (const candidate of placeCandidates) {
+      const geo = await astrologyPost("geo_details", { place: candidate, maxRows: 5 });
+      best = geo?.geonames?.[0] || null;
+      if (best) {
+        usedPlace = candidate;
+        break;
+      }
+    }
 
-let best = null;
-
-for (const candidate of placeCandidates) {
-  const geo = await astrologyPost("geo_details", { place: candidate, maxRows: 5 });
-  best = geo?.geonames?.[0] || null;
-  if (best) break;
-}
-
-if (!best) throw new Error("Geo lookup returned no results.");("Geo lookup returned no results.");
+    if (!best) throw new Error("Geo lookup returned no results.");
 
     const lat = Number(best.latitude);
     const lon = Number(best.longitude);
 
-    // 2) timezone_with_dst -> numeric offset (tzone float) for that date/location
+    // Timezone offset for that date/location
     const tz = await astrologyPost("timezone_with_dst", {
       lat,
       lon,
-      date: birthDate, // docs: timezone offset incl DST for date
+      date: birthDate,
     });
 
-    // const extractNumeric = (v) => {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string") {
-    const n = Number.parseFloat(v);
-    if (Number.isFinite(n)) return n;
-  }
-  return null;
-};
+    const tzone =
+      extractNumeric(tz?.tzone) ??
+      extractNumeric(tz?.timezone) ??
+      extractNumeric(tz?.tz) ??
+      extractNumeric(tz?.offset) ??
+      extractNumeric(tz?.gmtOffset) ??
+      extractNumeric(tz?.gmt_offset) ??
+      findFirstNumericInObject(tz);
 
-const findFirstNumericInObject = (obj) => {
-  if (!obj || typeof obj !== "object") return null;
-  const queue = [obj];
-  const seen = new Set();
-
-  while (queue.length) {
-    const cur = queue.shift();
-    if (!cur || typeof cur !== "object") continue;
-    if (seen.has(cur)) continue;
-    seen.add(cur);
-
-    for (const val of Object.values(cur)) {
-      const n = extractNumeric(val);
-      if (n !== null) return n;
-      if (val && typeof val === "object") queue.push(val);
-    }
-  }
-  return null;
-};
-
-// Try common keys first, then scan object
-let tzone =
-  extractNumeric(tz?.tzone) ??
-  extractNumeric(tz?.timezone) ??
-  extractNumeric(tz?.tz) ??
-  extractNumeric(tz?.offset) ??
-  extractNumeric(tz?.gmtOffset) ??
-  extractNumeric(tz?.gmt_offset) ??
-  findFirstNumericInObject(tz);
-
-if (typeof tzone !== "number") {
-  throw new Error("Timezone lookup did not return numeric tzone.");
-}") {
+    if (typeof tzone !== "number") {
       throw new Error("Timezone lookup did not return numeric tzone.");
     }
 
-    // 3) Planets tropical -> Sun, Moon, Ascendant signs
     const planets = await astrologyPost("planets/tropical", {
       day,
       month,
@@ -395,16 +379,15 @@ if (typeof tzone !== "number") {
       house_type: "placidus",
     });
 
+    const list = Array.isArray(planets) ? planets : (planets?.planets || []);
+
     const findSign = (planetName) => {
-      const p = (Array.isArray(planets) ? planets : planets?.planets || []).find(
-        (x) => (x?.name || "").toLowerCase() === planetName.toLowerCase()
-      );
+      const p = list.find((x) => (x?.name || "").toLowerCase() === planetName.toLowerCase());
       return safeTrim(p?.sign);
     };
 
     const sun = findSign("Sun");
     const moon = findSign("Moon");
-    // Docs say "Ascendant" is included in planets/tropical response
     const rising = findSign("Ascendant");
 
     if (!sun || !moon || !rising) {
@@ -412,11 +395,10 @@ if (typeof tzone !== "number") {
     }
 
     const big3 = { sun, moon, rising };
-
-    // Create interpretation HTML (short, based on Big 3)
     const interpretationHTML = buildInterpretationHTML({ name, sun, moon, rising });
 
-    // Full PDF HTML template
+    const locationLine = usedPlace;
+
     const fullHTML = buildFullHTML({
       name,
       email,
@@ -427,14 +409,12 @@ if (typeof tzone !== "number") {
       interpretationHTML,
     });
 
-    // Generate PDF
     const pdfBuffer = await htmlToPdfBuffer(fullHTML);
 
-    // Send email
     let email_status = "sent";
     try {
       const subject = "Your Natal Snapshot (Big 3 PDF)";
-      const text = `Attached is your Natal Snapshot PDF.\n\nPrivacy note: This report is generated on-demand and not stored.`;
+      const text = "Attached is your Natal Snapshot PDF.\n\nPrivacy note: This report is generated on-demand and not stored.";
       const filename = `natal-snapshot-${birthDate}.pdf`;
 
       await sendEmailWithPdf({
@@ -446,12 +426,10 @@ if (typeof tzone !== "number") {
         pdfBuffer,
       });
     } catch (e) {
-      // Minimal logging only
       console.error("SendGrid error:", e?.message || e);
       email_status = "failed";
     }
 
-    // Return instantly with essentials (no storage)
     return json(res, 200, {
       email_status,
       big3,
