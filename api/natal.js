@@ -2,8 +2,6 @@
 // Vercel Serverless Function (Node.js) - generate-and-discard, minimal logging.
 
 const sgMail = require("@sendgrid/mail");
-const chromium = require("@sparticuz/chromium");
-const puppeteer = require("puppeteer-core");
 const { DateTime } = require("luxon");
 
 function json(res, status, data) {
@@ -124,7 +122,6 @@ function signBlurbRising(sign) {
 
 function buildInterpretationHTML({ name, sun, moon, rising }) {
   const displayName = safeTrim(name) ? safeTrim(name) : "friend";
-
   return `
     <div>
       <h2 style="margin:0 0 10px 0;">Your Big 3 Snapshot</h2>
@@ -148,7 +145,6 @@ function buildInterpretationHTML({ name, sun, moon, rising }) {
 
 function buildFullHTML({ name, email, birthDate, birthTime, locationLine, big3, interpretationHTML }) {
   const titleName = safeTrim(name) ? safeTrim(name) : "Natal Snapshot";
-
   return `
   <!doctype html>
   <html>
@@ -194,27 +190,29 @@ function buildFullHTML({ name, email, birthDate, birthTime, locationLine, big3, 
 }
 
 async function htmlToPdfBuffer(html) {
-  const executablePath = await chromium.executablePath();
+  const key = process.env.PDFSHIFT_API_KEY;
+  if (!key) throw new Error("Missing PDFSHIFT_API_KEY.");
 
-  const browser = await puppeteer.launch({
-    args: chromium.args,
-    defaultViewport: chromium.defaultViewport,
-    executablePath,
-    headless: chromium.headless,
+  const resp = await fetch("https://api.pdfshift.io/v3/convert/pdf", {
+    method: "POST",
+    headers: {
+      Authorization: "Basic " + Buffer.from(`${key}:`).toString("base64"),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      source: html,
+      format: "Letter",
+      margin: "0.6in",
+      print_background: true,
+    }),
   });
 
-  try {
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "networkidle0" });
-    const pdf = await page.pdf({
-      format: "Letter",
-      printBackground: true,
-      margin: { top: "0.6in", right: "0.6in", bottom: "0.6in", left: "0.6in" },
-    });
-    return pdf;
-  } finally {
-    await browser.close();
+  const buf = Buffer.from(await resp.arrayBuffer());
+  if (!resp.ok) {
+    const msg = buf.toString("utf8").slice(0, 500);
+    throw new Error(`PDFShift failed: ${resp.status} ${msg}`);
   }
+  return buf;
 }
 
 async function sendEmailWithPdf({ to, from, subject, text, filename, pdfBuffer }) {
@@ -259,10 +257,8 @@ module.exports = async (req, res) => {
     const email = safeTrim(body.email);
     const website = safeTrim(body.website);
 
-    // honeypot
     if (website) return json(res, 400, { error: "Spam detected." });
 
-    // validation
     if (!isValidDateYYYYMMDD(birthDate)) return json(res, 400, { error: "birthDate must be YYYY-MM-DD" });
     if (!isValidTimeHHMM(birthTime)) return json(res, 400, { error: "birthTime must be HH:MM" });
     if (!birthCity) return json(res, 400, { error: "birthCity is required" });
@@ -281,7 +277,7 @@ module.exports = async (req, res) => {
     const hour = Number(hourStr);
     const min = Number(minStr);
 
-    // GEO lookup with retries
+    // Geo lookup retries
     const countryNorm = normalizeCountry(birthCountry);
     const placeCandidates = [
       [birthCity, birthRegion, countryNorm].filter(Boolean).join(", "),
@@ -302,13 +298,12 @@ module.exports = async (req, res) => {
         break;
       }
     }
-
     if (!best) throw new Error("Geo lookup returned no results.");
 
     const lat = Number(best.latitude);
     const lon = Number(best.longitude);
 
-    // timezone name from geo response, then compute offset using Luxon
+    // Timezone name from geo response; compute offset with Luxon
     const tzName =
       safeTrim(best.timezone) ||
       safeTrim(best.timezoneId) ||
@@ -316,18 +311,14 @@ module.exports = async (req, res) => {
       safeTrim(best.timezone_name) ||
       "";
 
-    if (!tzName) {
-      throw new Error("Geo lookup did not return a timezone name.");
-    }
+    if (!tzName) throw new Error("Geo lookup did not return a timezone name.");
 
     const dt = DateTime.fromISO(`${birthDate}T${birthTime}`, { zone: tzName });
-    if (!dt.isValid) {
-      throw new Error(`Invalid datetime for timezone computation: ${dt.invalidExplanation || "unknown"}`);
-    }
+    if (!dt.isValid) throw new Error(`Invalid datetime: ${dt.invalidExplanation || "unknown"}`);
 
-    const tzone = dt.offset / 60; // minutes -> hours (can be fractional)
+    const tzone = dt.offset / 60;
 
-    // planets -> Big 3
+    // Big 3
     const planets = await astrologyPost("planets/tropical", {
       day,
       month,
@@ -341,7 +332,6 @@ module.exports = async (req, res) => {
     });
 
     const list = Array.isArray(planets) ? planets : (planets?.planets || []);
-
     const findSign = (planetName) => {
       const p = list.find((x) => (x?.name || "").toLowerCase() === planetName.toLowerCase());
       return safeTrim(p?.sign);
@@ -370,7 +360,6 @@ module.exports = async (req, res) => {
 
     const pdfBuffer = await htmlToPdfBuffer(fullHTML);
 
-    // Send email (don’t fail the API response if SendGrid fails)
     let email_status = "sent";
     try {
       const subject = "Your Natal Snapshot (Big 3 PDF)";
