@@ -1,0 +1,15 @@
+{
+  "name": "klmnop-natal-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Plain Node.js Vercel Serverless Function: POST /api/natal",
+  "main": "api/natal.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@sendgrid/mail": "^8.1.4",
+    "@sparticuz/chromium": "^131.0.0",
+    "puppeteer-core": "^24.10.0"
+  }
+}
